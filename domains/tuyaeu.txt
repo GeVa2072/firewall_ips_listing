@@ -1,0 +1,2 @@
+apigw.tuyaeu.com
+apigw.iotbing.com

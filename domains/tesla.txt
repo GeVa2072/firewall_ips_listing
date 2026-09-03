@@ -1,0 +1,13 @@
+auth.tesla.com
+owner-api.teslamotors.com
+owner-api.vn.cloud.tesla.cn
+streaming.vn.teslamotors.com
+fleet-api.prd.eu.vn.cloud.tesla.com
+fleet-api.tesla.com
+tesla.com
+epuca-prd.euw1.vn.cloud.tesla.com
+auth.tesla.com.edgekey.net
+epuca-prd.cnn1.vn.cloud.tesla.cn
+owner-api.vn.tesla.services
+streaming.vn.tesla.services
+teslamotors.com

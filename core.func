@@ -1,0 +1,87 @@
+
+# 1. Best Practice: Prevent direct execution
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    echo "Error: This file must be sourced, not executed." >&2
+    exit 1
+fi
+
+# 1. Global constants go here
+readonly GREEN='\033[0;32m'
+readonly RED='\033[0;31m'
+readonly NC='\033[0m'
+readonly BOLD='\033[1m'
+
+grab_ip_print_status_line() {
+	text=$1
+	ip=$2
+	status=$3
+	awk -v txt="${text}" -v ip="${ip}" -v st="[${status}]" 'BEGIN { printf "%-79s %-44s %s\n", txt, ip, st }'
+}
+
+grab_ip_ligne_separator() {
+  sep=${1:-"-"}
+  # 1. On crée une chaîne de 134 espaces
+  printf -v line '%134s' ''
+
+  # 2. On remplace tous les espaces par le séparateur (Syntaxe native Bash)
+  echo "${line// /$sep}"
+}
+
+
+# Génère une ligne de séparation parfaite de 134 caractères
+grab_ip_print_header() {
+  title=$1
+  grab_ip_ligne_separator "="
+
+  echo $title
+
+  grab_ip_ligne_separator
+}
+
+grab_ip_print_footer() {
+  total=$1
+  success=$2
+  failed=$3
+
+  grab_ip_ligne_separator "="
+  if [ "$failed" -eq 0 ]; then
+      printf "${GREEN}${BOLD}      🟢 BILAN : MULTIPLEXAGE RÉUSSI (%d/%d tests valides)${NC}\n" "$success" "$total"
+  else
+      printf "${RED}${BOLD}      🔴 BILAN : DES ERREURS ONT ÉTÉ DÉTECTÉES (%d échecs sur %d tests)${NC}\n" "$failed" "$total"
+  fi
+  grab_ip_ligne_separator
+}
+
+grab_ip_resolve_dns() {
+  domain=$1
+  type=$2
+  dig +short $domain $type | while read -r ip
+  do
+    if [ -n $ip ] && grab_ip_is_valid_ip $ip $type
+	then
+	  echo $ip
+	fi
+  done
+}
+
+grab_ip_is_valid_ip() { 
+  ip=$1
+  type=$2
+  case $type in
+    AAAA)
+	  if [[ $ip =~ ^([0-9a-fA-F]{0,4}[:]{1,2})+[0-9a-fA-F]{0,4}(([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)?(%[a-zA-Z0-9._-]+)?)$ ]]
+	  then
+	    return 0
+      else
+	    return 1
+	  fi
+	;;
+	A)
+		# $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$
+	  ip -4 route get $ip/32 >/dev/null 2>&1 
+	  return $?
+	;;
+	*)
+	  return 255
+  esac
+}
