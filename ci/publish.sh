@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Publish target/*.json to the 'public' branch (raw URL = stable latest,
-# publicly downloadable) and ensure a 'latest' release links them.
+# Publish target/*.json as downloadable release assets.
+#
+# Storage:  Generic Package Registry, package "firewall_ips", version "latest"
+#           (overwritten each run, no accumulation, stable URL).
+# Release:  tag "latest" with asset links using direct_asset_path, so files are
+#           downloadable at the permanent URL:
+#             <project>/-/releases/latest/downloads/<name>.json
 #
 # Required CI/CD variable:
-#   PROJECT_TOKEN  Project Access Token with `api` + `write_repository` scope
-#
-# The 'public' branch must allow force-push (do not protect it, or allow
-# force-push in its protection rule).
+#   PROJECT_TOKEN  Project Access Token with `api` scope (and `write_repository`
+#                  if the tag must be created from a protected branch).
 
-: "${PROJECT_TOKEN:?PROJECT_TOKEN CI variable is required (api + write_repository scope)}"
+: "${PROJECT_TOKEN:?PROJECT_TOKEN CI variable is required (api scope)}"
 : "${CI_PROJECT_ID:?}"
 : "${CI_PROJECT_URL:?}"
 : "${CI_API_V4_URL:?}"
@@ -18,8 +21,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="$SCRIPT_DIR/target"
-PUBLISH_BRANCH="public"
-AUTH_URL="${CI_PROJECT_URL/#https:\/\//https://oauth2:${PROJECT_TOKEN}@}"
+PKG_NAME="firewall_ips"
+PKG_VERSION="latest"
+TAG="latest"
 API="$CI_API_V4_URL/projects/$CI_PROJECT_ID"
 
 if [ ! -d "$TARGET" ] || [ -z "$(ls -A "$TARGET"/*.json 2>/dev/null)" ]; then
@@ -28,82 +32,79 @@ if [ ! -d "$TARGET" ] || [ -z "$(ls -A "$TARGET"/*.json 2>/dev/null)" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 1. Push JSON snapshots to the 'public' branch (orphan, force-push).
-#    Raw URL serves the latest content: a stable, public "latest" download.
+# 1. Upload each JSON to the Generic Package Registry (version "latest").
+#    Overwrites the previous version; no accumulation.
 # ---------------------------------------------------------------------------
-echo ">>> Publishing JSON to branch ${PUBLISH_BRANCH}"
-
-# Stash freshly generated JSON outside the repo so git operations cannot
-# clobber them (target/ is gitignored and the public branch may track them).
-STASH=$(mktemp -d)
-cp "$TARGET"/*.json "$STASH"/
-
-git remote set-url origin "${AUTH_URL}"
-if git fetch --depth 1 origin "$PUBLISH_BRANCH" 2>/dev/null; then
-  git checkout -B "$PUBLISH_BRANCH" FETCH_HEAD
-else
-  git checkout --orphan "$PUBLISH_BRANCH"
-fi
-git rm -rf --quiet . 2>/dev/null || true
-
-mkdir -p "$TARGET"
-cp "$STASH"/*.json "$TARGET"/
-rm -rf "$STASH"
-
-git config user.email "ci@gitlab.vanelsuve.fr"
-git config user.name "CI bot"
-git add -f "$TARGET"/*.json
-git commit -q -m "chore: refresh IP snapshots ($(date -u +%FT%TZ))" || {
-  echo "No changes since last run."
-}
-git push --force origin "$PUBLISH_BRANCH"
-# Back to the default branch so subsequent steps (if any) are not surprised.
-git checkout -q "$CI_DEFAULT_BRANCH"
+echo ">>> Uploading JSON to package registry (${PKG_NAME}/${PKG_VERSION})"
+for f in "$TARGET"/*.json; do
+  name=$(basename "$f")
+  enc=$(printf '%s' "$name" | sed 's/ /%20/g')
+  curl -sf --request PUT \
+    --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
+    --header "Content-Type: application/json" \
+    --data-binary "@$f" \
+    "${API}/packages/generic/${PKG_NAME}/${PKG_VERSION}/${enc}" >/dev/null
+  echo "    uploaded ${name}"
+done
 
 # ---------------------------------------------------------------------------
-# 2. Ensure tag 'latest' and release 'latest' exist, linking the raw URLs.
-#    Idempotent: created once, links are stable (raw URL always serves latest).
+# 2. Ensure tag "latest" exists (release needs a tag).
 # ---------------------------------------------------------------------------
-echo ">>> Ensuring release 'latest'"
-if ! curl -sf --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" "${API}/repository/tags/latest" >/dev/null 2>&1; then
+echo ">>> Ensuring tag '${TAG}'"
+if ! curl -sf --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" "${API}/repository/tags/${TAG}" >/dev/null 2>&1; then
   curl -sf --request POST --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
-    --data-urlencode "tag_name=latest" \
+    --data-urlencode "tag_name=${TAG}" \
     --data-urlencode "ref=${CI_DEFAULT_BRANCH}" \
     "${API}/repository/tags" >/dev/null
 fi
 
-DESC="IP snapshots auto-refreshed hourly. Files always serve the latest content via the \`public\` branch raw URLs below."
-
-# Try to create the release; if it already exists (409), update the description.
-if ! curl -sf --request POST --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
-     --header "Content-Type: application/json" \
-     --data "{\"name\":\"Latest IP snapshots\",\"tag_name\":\"latest\",\"description\":\"${DESC}\"}" \
-     "${API}/releases" >/dev/null 2>&1; then
+# ---------------------------------------------------------------------------
+# 3. Ensure release "latest" exists.
+# ---------------------------------------------------------------------------
+echo ">>> Ensuring release '${TAG}'"
+DESC="IP snapshots auto-refreshed hourly. Files always serve the latest content."
+if ! curl -sf --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" "${API}/releases/${TAG}" >/dev/null 2>&1; then
+  curl -sf --request POST --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
+    --header "Content-Type: application/json" \
+    --data "{\"name\":\"Latest IP snapshots\",\"tag_name\":\"${TAG}\",\"description\":\"${DESC}\"}" \
+    "${API}/releases" >/dev/null
+else
   curl -sf --request PUT --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
     --data-urlencode "description=${DESC}" \
-    "${API}/releases/latest" >/dev/null
+    "${API}/releases/${TAG}" >/dev/null
 fi
 
-# Add release links to each JSON raw URL (idempotent: skip existing).
+# ---------------------------------------------------------------------------
+# 4. Sync asset links: delete existing with same name, re-create fresh.
+#    Each link points to the package registry download URL with a
+#    direct_asset_path so the permanent downloads/ URL works.
+# ---------------------------------------------------------------------------
+echo ">>> Syncing asset links"
+existing=$(curl -sf --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" "${API}/releases/${TAG}/assets/links")
+
 for f in "$TARGET"/*.json; do
-  name=$(basename "$f" .json)
-  url="${CI_PROJECT_URL}/-/raw/${PUBLISH_BRANCH}/target/${name}.json"
-  link_name="${name}.json"
-  # Check if link already exists
-  if curl -sf --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" "${API}/releases/latest/assets/links" \
-     | jq -e --arg n "$link_name" '.[] | select(.name==$n)' >/dev/null 2>&1; then
-    continue
+  name=$(basename "$f")
+  pkg_url="${API}/packages/generic/${PKG_NAME}/${PKG_VERSION}/$(printf '%s' "$name" | sed 's/ /%20/g')"
+  asset_path="/${name}"
+
+  link_id=$(printf '%s' "$existing" | jq -r --arg n "$name" '.[] | select(.name==$n) | .id')
+  if [ -n "$link_id" ] && [ "$link_id" != "null" ]; then
+    curl -sf --request DELETE --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
+      "${API}/releases/${TAG}/assets/links/${link_id}" >/dev/null
   fi
+
   curl -sf --request POST --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
-    --data-urlencode "name=${link_name}" \
-    --data-urlencode "url=${url}" \
+    --data-urlencode "name=${name}" \
+    --data-urlencode "url=${pkg_url}" \
+    --data-urlencode "direct_asset_path=${asset_path}" \
     --data-urlencode "link_type=other" \
-    "${API}/releases/latest/assets/links" >/dev/null
+    "${API}/releases/${TAG}/assets/links" >/dev/null
+  echo "    linked ${name} -> ${CI_PROJECT_URL}/-/releases/${TAG}/downloads/${name}"
 done
 
 echo ">>> Done. Public download URLs:"
 for f in "$TARGET"/*.json; do
   name=$(basename "$f")
-  echo "    ${CI_PROJECT_URL}/-/raw/${PUBLISH_BRANCH}/target/${name}"
+  echo "    ${CI_PROJECT_URL}/-/releases/${TAG}/downloads/${name}"
 done
-echo ">>> Release page: ${CI_PROJECT_URL}/-/releases/latest"
+echo ">>> Release page: ${CI_PROJECT_URL}/-/releases/${TAG}"
