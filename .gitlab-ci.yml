@@ -22,6 +22,9 @@ test:
 build_image:
   stage: build
   image: quay.io/podman/stable:latest
+  tags:
+    - podman
+    - privileged
   variables:
     DOCKER_HOST: unix:///run/podman/podman.sock
   rules:
