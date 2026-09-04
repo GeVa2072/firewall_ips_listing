@@ -117,3 +117,58 @@ formats).
 `last_seen` refresh, IP preservation when absent from a run (round-robin
 survival), purge by retention cutoff, `retention 0` disabling purge, empty
 resolution, and type preservation. All deterministic, no network.
+
+## CI/CD — auto-refreshed public downloads
+
+A GitLab CI pipeline (`.gitlab-ci.yml`) runs hourly on schedule, resolves
+all domains, and publishes the resulting JSON to a `public` branch. The
+files are downloadable at stable, public URLs that always serve the latest
+content:
+
+```
+https://gitlab.vanelsuve.fr/expose/firewall_ips_listing/-/raw/public/target/tesla.json
+https://gitlab.vanelsuve.fr/expose/firewall_ips_listing/-/raw/public/target/tuyaeu.json
+...
+```
+
+A `latest` release (permalink: `/-/releases/permalink/latest`) links every
+JSON for convenience.
+
+### One-time setup
+
+1. **Add a Docker runner** to the GitLab instance (Settings > CI/CD >
+   Runners). The pipeline uses `alpine:latest`.
+
+2. **Create a Project Access Token** (Settings > Access Tokens) with scopes
+   `api` and `write_repository`, role Reporter or higher. Copy the token
+   value.
+
+3. **Add the token as a CI/CD variable** (Settings > CI/CD > Variables):
+   - Key: `PROJECT_TOKEN`
+   - Value: the token from step 2
+   - Masked: yes
+   - Protected: no (schedules run on the default branch; protect only if
+     your schedule is on a protected branch)
+
+4. **Create a schedule** (Settings > CI/CD > Schedules):
+   - Interval pattern: `0 * * * *` (every hour)
+   - Target branch: `main`
+   - Active: yes
+
+5. **Allow force-push on the `public` branch.** Either do not protect it,
+   or in its branch protection rule enable "Allowed to force-push". The CI
+   rewrites this branch each run to keep a single clean commit and a stable
+   raw URL.
+
+6. **Make the project public** (Settings > General > Visibility) so the
+   raw URLs and release are downloadable without authentication.
+
+### Pipeline jobs
+
+| Job | When | What |
+|---|---|---|
+| `test` | push, merge request | runs both test suites |
+| `publish_ips` | schedule (hourly), manual | runs `grab_ip.sh`, pushes JSON to `public` branch, refreshes `latest` release |
+
+To trigger a refresh manually: CI/CD > Pipelines > Run pipeline (the
+`publish_ips` job runs on `web` source).
