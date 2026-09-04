@@ -32,27 +32,33 @@ fi
 #    Raw URL serves the latest content: a stable, public "latest" download.
 # ---------------------------------------------------------------------------
 echo ">>> Publishing JSON to branch ${PUBLISH_BRANCH}"
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
 
-if git clone --depth 1 --branch "$PUBLISH_BRANCH" "${AUTH_URL}" "$TMP" 2>/dev/null; then
-  : # branch exists
+# Stash freshly generated JSON outside the repo so git operations cannot
+# clobber them (target/ is gitignored and the public branch may track them).
+STASH=$(mktemp -d)
+cp "$TARGET"/*.json "$STASH"/
+
+git remote set-url origin "${AUTH_URL}"
+if git fetch --depth 1 origin "$PUBLISH_BRANCH" 2>/dev/null; then
+  git checkout -B "$PUBLISH_BRANCH" FETCH_HEAD
 else
-  git clone --depth 1 "${AUTH_URL}" "$TMP"
-  git -C "$TMP" checkout --orphan "$PUBLISH_BRANCH"
-  git -C "$TMP" rm -rf . 2>/dev/null || true
+  git checkout --orphan "$PUBLISH_BRANCH"
 fi
+git rm -rf --quiet . 2>/dev/null || true
 
-mkdir -p "$TMP/target"
-cp "$TARGET"/*.json "$TMP/target/"
+mkdir -p "$TARGET"
+cp "$STASH"/*.json "$TARGET"/
+rm -rf "$STASH"
 
-git -C "$TMP" config user.email "ci@gitlab.vanelsuve.fr"
-git -C "$TMP" config user.name "CI bot"
-git -C "$TMP" add -A
-git -C "$TMP" commit -m "chore: refresh IP snapshots ($(date -u +%FT%TZ))" || {
+git config user.email "ci@gitlab.vanelsuve.fr"
+git config user.name "CI bot"
+git add -f "$TARGET"/*.json
+git commit -q -m "chore: refresh IP snapshots ($(date -u +%FT%TZ))" || {
   echo "No changes since last run."
 }
-git -C "$TMP" push --force origin "$PUBLISH_BRANCH"
+git push --force origin "$PUBLISH_BRANCH"
+# Back to the default branch so subsequent steps (if any) are not surprised.
+git checkout -q "$CI_DEFAULT_BRANCH"
 
 # ---------------------------------------------------------------------------
 # 2. Ensure tag 'latest' and release 'latest' exist, linking the raw URLs.
