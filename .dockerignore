@@ -1,0 +1,6 @@
+target/
+.git/
+.gitlab-ci.yml
+README.md
+LICENSE
+tests/
