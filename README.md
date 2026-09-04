@@ -126,8 +126,16 @@ resolution, and type preservation. All deterministic, no network.
 
 A GitLab CI pipeline (`.gitlab-ci.yml`) runs hourly on schedule, resolves
 all domains, and publishes the resulting JSON to the Generic Package Registry
-(package `firewall_ips`, version `latest`). Each run deletes the old package
-version first (to avoid file accumulation) and uploads fresh files. The
+(package `firewall_ips`, version `latest`). Each run:
+
+1. **Fetches** existing JSON from the registry into `target/` (restores
+   `last_seen` history from the previous run)
+2. **Resolves** current IPs and merges with existing data (`grab_ip.sh`)
+3. **Publishes** fresh JSON to the registry (deletes old package first to
+   avoid accumulation, then uploads)
+
+This preserves the `last_seen` history across runs — without the fetch step,
+each run would start from scratch and lose all accumulated history. The
 download URLs are stable, public (if the project is public), and always
 serve the latest content:
 
@@ -179,7 +187,7 @@ To force a rebuild manually, run a pipeline with the variable
 |---|---|---|
 | `test` | push, merge request | runs both test suites |
 | `build_image` | Dockerfile changed (push), manual (`BUILD_IMAGE=true`) | builds and pushes the CI Docker image to the Container Registry |
-| `publish_ips` | schedule (hourly), manual | runs `grab_ip.sh`, uploads JSON to package registry |
+| `publish_ips` | schedule (hourly), manual | fetches existing JSON from registry, runs `grab_ip.sh` (merge), uploads fresh JSON |
 
 To trigger a refresh manually: CI/CD > Pipelines > Run pipeline (the
 `publish_ips` job runs on `web` source).

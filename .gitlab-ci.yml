@@ -46,5 +46,6 @@ publish_ips:
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_PIPELINE_SOURCE == "web"
   script:
+    - bash ci/fetch.sh
     - bash grab_ip.sh
     - bash ci/publish.sh
