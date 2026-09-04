@@ -1,30 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Publish target/*.json as downloadable release assets.
+# Publish target/*.json to the Generic Package Registry.
 #
-# Storage:  Generic Package Registry, package "firewall_ips", version "latest"
-#           (overwritten each run, no accumulation, stable URL).
-# Release:  tag "latest" with asset links using direct_asset_path, so files are
-#           downloadable at the permanent URL:
-#             <project>/-/releases/latest/downloads/<name>.json
-#
-# Required CI/CD variable:
-#   PROJECT_TOKEN  Project Access Token with `api` scope, used only for tag
-#                  and release creation. Package uploads use $CI_JOB_TOKEN
-#                  (automatically provided by GitLab CI).
+# Files are uploaded with $CI_JOB_TOKEN (automatically provided by GitLab CI,
+# no PAT needed) to package "firewall_ips", version "latest" (overwritten
+# each run). The download URL is stable, public, and always serves the latest
+# content:
+#   <project>/-/packages/generic/firewall_ips/latest/<name>.json
 
-: "${PROJECT_TOKEN:?PROJECT_TOKEN CI variable is required (api scope)}"
+: "${CI_JOB_TOKEN:?CI_JOB_TOKEN is required (provided automatically by GitLab CI)}"
 : "${CI_PROJECT_ID:?}"
 : "${CI_PROJECT_URL:?}"
 : "${CI_API_V4_URL:?}"
-: "${CI_DEFAULT_BRANCH:=main}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="$SCRIPT_DIR/target"
 PKG_NAME="firewall_ips"
 PKG_VERSION="latest"
-TAG="latest"
 API="$CI_API_V4_URL/projects/$CI_PROJECT_ID"
 
 if [ ! -d "$TARGET" ] || [ -z "$(ls -A "$TARGET"/*.json 2>/dev/null)" ]; then
@@ -34,7 +27,7 @@ fi
 
 # curl wrapper that fails loudly: prints HTTP status + body on error.
 curl_api() {
-  local out code
+  local out code body
   out=$(mktemp)
   curl -sS --write-out '%{http_code}' "$@" >"$out" 2>/dev/null
   code=$(tail -c3 "$out")
@@ -48,79 +41,18 @@ curl_api() {
   printf '%s' "$body"
 }
 
-# ---------------------------------------------------------------------------
-# 1. Upload each JSON to the Generic Package Registry (version "latest").
-#    Overwrites the previous version; no accumulation.
-# ---------------------------------------------------------------------------
 echo ">>> Uploading JSON to package registry (${PKG_NAME}/${PKG_VERSION})"
 for f in "$TARGET"/*.json; do
   name=$(basename "$f")
-  enc=$(printf '%s' "$name" | sed 's/ /%20/g')
   curl_api --request PUT \
     --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
     --upload-file "$f" \
-    "${API}/packages/generic/${PKG_NAME}/${PKG_VERSION}/${enc}" >/dev/null
+    "${API}/packages/generic/${PKG_NAME}/${PKG_VERSION}/${name}" >/dev/null
   echo "    uploaded ${name}"
-done
-
-# ---------------------------------------------------------------------------
-# 2. Ensure tag "latest" exists (release needs a tag).
-# ---------------------------------------------------------------------------
-echo ">>> Ensuring tag '${TAG}'"
-if ! curl_api --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" "${API}/repository/tags/${TAG}" >/dev/null 2>&1; then
-  curl_api --request POST --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
-    --data-urlencode "tag_name=${TAG}" \
-    --data-urlencode "ref=${CI_DEFAULT_BRANCH}" \
-    "${API}/repository/tags" >/dev/null
-fi
-
-# ---------------------------------------------------------------------------
-# 3. Ensure release "latest" exists.
-# ---------------------------------------------------------------------------
-echo ">>> Ensuring release '${TAG}'"
-DESC="IP snapshots auto-refreshed hourly. Files always serve the latest content."
-if ! curl_api --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" "${API}/releases/${TAG}" >/dev/null 2>&1; then
-  curl_api --request POST --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
-    --header "Content-Type: application/json" \
-    --data "{\"name\":\"Latest IP snapshots\",\"tag_name\":\"${TAG}\",\"description\":\"${DESC}\"}" \
-    "${API}/releases" >/dev/null
-else
-  curl_api --request PUT --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
-    --data-urlencode "description=${DESC}" \
-    "${API}/releases/${TAG}" >/dev/null
-fi
-
-# ---------------------------------------------------------------------------
-# 4. Sync asset links: delete existing with same name, re-create fresh.
-#    Each link points to the package registry download URL with a
-#    direct_asset_path so the permanent downloads/ URL works.
-# ---------------------------------------------------------------------------
-echo ">>> Syncing asset links"
-existing=$(curl_api --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" "${API}/releases/${TAG}/assets/links")
-
-for f in "$TARGET"/*.json; do
-  name=$(basename "$f")
-  pkg_url="${API}/packages/generic/${PKG_NAME}/${PKG_VERSION}/$(printf '%s' "$name" | sed 's/ /%20/g')"
-  asset_path="/${name}"
-
-  link_id=$(printf '%s' "$existing" | jq -r --arg n "$name" '.[] | select(.name==$n) | .id')
-  if [ -n "$link_id" ] && [ "$link_id" != "null" ]; then
-    curl_api --request DELETE --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
-      "${API}/releases/${TAG}/assets/links/${link_id}" >/dev/null
-  fi
-
-  curl_api --request POST --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
-    --data-urlencode "name=${name}" \
-    --data-urlencode "url=${pkg_url}" \
-    --data-urlencode "direct_asset_path=${asset_path}" \
-    --data-urlencode "link_type=other" \
-    "${API}/releases/${TAG}/assets/links" >/dev/null
-  echo "    linked ${name} -> ${CI_PROJECT_URL}/-/releases/${TAG}/downloads/${name}"
 done
 
 echo ">>> Done. Public download URLs:"
 for f in "$TARGET"/*.json; do
   name=$(basename "$f")
-  echo "    ${CI_PROJECT_URL}/-/releases/${TAG}/downloads/${name}"
+  echo "    ${CI_PROJECT_URL}/-/packages/generic/${PKG_NAME}/${PKG_VERSION}/${name}"
 done
-echo ">>> Release page: ${CI_PROJECT_URL}/-/releases/${TAG}"

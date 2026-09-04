@@ -121,18 +121,18 @@ resolution, and type preservation. All deterministic, no network.
 ## CI/CD — auto-refreshed public downloads
 
 A GitLab CI pipeline (`.gitlab-ci.yml`) runs hourly on schedule, resolves
-all domains, and publishes the resulting JSON as release assets. Files are
-stored in the Generic Package Registry (version `latest`, overwritten each
-run) and linked from a `latest` release with permanent download URLs:
+all domains, and publishes the resulting JSON to the Generic Package Registry
+(package `firewall_ips`, version `latest`, overwritten each run). The
+download URLs are stable, public, and always serve the latest content:
 
 ```
-https://gitlab.vanelsuve.fr/expose/firewall_ips_listing/-/releases/latest/downloads/tesla.json
-https://gitlab.vanelsuve.fr/expose/firewall_ips_listing/-/releases/latest/downloads/tuyaeu.json
+https://gitlab.vanelsuve.fr/expose/firewall_ips_listing/-/packages/generic/firewall_ips/latest/tesla.json
+https://gitlab.vanelsuve.fr/expose/firewall_ips_listing/-/packages/generic/firewall_ips/latest/tuyaeu.json
 ...
 ```
 
-These URLs are stable and always serve the latest content. No branch to
-maintain, no force-push.
+No release, no tag, no PAT. The pipeline uses only `$CI_JOB_TOKEN`
+(automatically provided by GitLab CI) to upload to the package registry.
 
 ### One-time setup
 
@@ -142,31 +142,20 @@ maintain, no force-push.
 2. **Enable the Package Registry** (Settings > General > Visibility >
    Package registry) so the Generic Package Registry is available.
 
-3. **Create a Project Access Token** (Settings > Access Tokens) with scope
-   `api`, role Reporter or higher. Copy the token value.
-
-4. **Add the token as a CI/CD variable** (Settings > CI/CD > Variables):
-   - Key: `PROJECT_TOKEN`
-   - Value: the token from step 3
-   - Masked: yes
-   - Protected: no (schedules run on the default branch; protect only if
-     your schedule is on a protected branch)
-
-5. **Create a schedule** (Settings > CI/CD > Schedules):
+3. **Create a schedule** (Settings > CI/CD > Schedules):
    - Interval pattern: `0 * * * *` (every hour)
    - Target branch: `main`
    - Active: yes
 
-6. **Make the project public** (Settings > General > Visibility) so the
-   release downloads and package registry are accessible without
-   authentication.
+4. **Make the project public** (Settings > General > Visibility) so the
+   package registry downloads are accessible without authentication.
 
 ### Pipeline jobs
 
 | Job | When | What |
 |---|---|---|
 | `test` | push, merge request | runs both test suites |
-| `publish_ips` | schedule (hourly), manual | runs `grab_ip.sh`, uploads JSON to package registry, refreshes `latest` release links |
+| `publish_ips` | schedule (hourly), manual | runs `grab_ip.sh`, uploads JSON to package registry |
 
 To trigger a refresh manually: CI/CD > Pipelines > Run pipeline (the
 `publish_ips` job runs on `web` source).
