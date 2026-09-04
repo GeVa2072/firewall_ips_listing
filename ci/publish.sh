@@ -10,8 +10,9 @@ set -euo pipefail
 #             <project>/-/releases/latest/downloads/<name>.json
 #
 # Required CI/CD variable:
-#   PROJECT_TOKEN  Project Access Token with `api` scope (and `write_repository`
-#                  if the tag must be created from a protected branch).
+#   PROJECT_TOKEN  Project Access Token with `api` scope, used only for tag
+#                  and release creation. Package uploads use $CI_JOB_TOKEN
+#                  (automatically provided by GitLab CI).
 
 : "${PROJECT_TOKEN:?PROJECT_TOKEN CI variable is required (api scope)}"
 : "${CI_PROJECT_ID:?}"
@@ -56,9 +57,8 @@ for f in "$TARGET"/*.json; do
   name=$(basename "$f")
   enc=$(printf '%s' "$name" | sed 's/ /%20/g')
   curl_api --request PUT \
-    --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
-    --header "Content-Type: application/json" \
-    --data-binary "@$f" \
+    --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+    --upload-file "$f" \
     "${API}/packages/generic/${PKG_NAME}/${PKG_VERSION}/${enc}" >/dev/null
   echo "    uploaded ${name}"
 done
