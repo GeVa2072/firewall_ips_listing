@@ -3,11 +3,12 @@ set -euo pipefail
 
 # Publish target/*.json to the Generic Package Registry.
 #
-# Files are uploaded with $CI_JOB_TOKEN (automatically provided by GitLab CI,
-# no PAT needed) to package "firewall_ips", version "latest" (overwritten
-# each run). The download URL is stable, public, and always serves the latest
-# content:
-#   <project>/-/packages/generic/firewall_ips/latest/<name>.json
+# Each run deletes the old package version (to avoid file accumulation),
+# then uploads fresh JSON. The download URL is stable, public (if the
+# project is public), and always serves the latest content:
+#   <gitlab>/api/v4/projects/<id>/packages/generic/firewall_ips/latest/<name>.json
+#
+# Uses only $CI_JOB_TOKEN (automatically provided by GitLab CI, no PAT).
 
 : "${CI_JOB_TOKEN:?CI_JOB_TOKEN is required (provided automatically by GitLab CI)}"
 : "${CI_PROJECT_ID:?}"
@@ -41,6 +42,28 @@ curl_api() {
   printf '%s' "$body"
 }
 
+# ---------------------------------------------------------------------------
+# 1. Delete the old package version to avoid file accumulation.
+#    The generic registry adds files on each PUT instead of overwriting,
+#    so we wipe the version before uploading fresh files.
+# ---------------------------------------------------------------------------
+echo ">>> Cleaning up old package (${PKG_NAME}/${PKG_VERSION})"
+pkg_id=$(curl_api \
+  --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+  "${API}/packages?package_type=generic&package_name=${PKG_NAME}&package_version=${PKG_VERSION}" \
+  | jq -r '.[0].id // empty')
+if [ -n "$pkg_id" ] && [ "$pkg_id" != "null" ]; then
+  curl_api --request DELETE \
+    --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+    "${API}/packages/${pkg_id}" >/dev/null
+  echo "    deleted old package (id=${pkg_id})"
+else
+  echo "    no old package to delete"
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Upload each JSON to the Generic Package Registry.
+# ---------------------------------------------------------------------------
 echo ">>> Uploading JSON to package registry (${PKG_NAME}/${PKG_VERSION})"
 for f in "$TARGET"/*.json; do
   name=$(basename "$f")
@@ -51,8 +74,8 @@ for f in "$TARGET"/*.json; do
   echo "    uploaded ${name}"
 done
 
-echo ">>> Done. Public download URLs:"
+echo ">>> Done. Download URLs (public if project is public):"
 for f in "$TARGET"/*.json; do
   name=$(basename "$f")
-  echo "    ${CI_PROJECT_URL}/-/packages/generic/${PKG_NAME}/${PKG_VERSION}/${name}"
+  echo "    ${API}/packages/generic/${PKG_NAME}/${PKG_VERSION}/${name}"
 done

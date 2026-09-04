@@ -122,17 +122,19 @@ resolution, and type preservation. All deterministic, no network.
 
 A GitLab CI pipeline (`.gitlab-ci.yml`) runs hourly on schedule, resolves
 all domains, and publishes the resulting JSON to the Generic Package Registry
-(package `firewall_ips`, version `latest`, overwritten each run). The
-download URLs are stable, public, and always serve the latest content:
+(package `firewall_ips`, version `latest`). Each run deletes the old package
+version first (to avoid file accumulation) and uploads fresh files. The
+download URLs are stable, public (if the project is public), and always
+serve the latest content:
 
 ```
-https://gitlab.vanelsuve.fr/expose/firewall_ips_listing/-/packages/generic/firewall_ips/latest/tesla.json
-https://gitlab.vanelsuve.fr/expose/firewall_ips_listing/-/packages/generic/firewall_ips/latest/tuyaeu.json
+https://gitlab.vanelsuve.fr/api/v4/projects/1/packages/generic/firewall_ips/latest/tesla.json
+https://gitlab.vanelsuve.fr/api/v4/projects/1/packages/generic/firewall_ips/latest/tuyaeu.json
 ...
 ```
 
-No release, no tag, no PAT. The pipeline uses only `$CI_JOB_TOKEN`
-(automatically provided by GitLab CI) to upload to the package registry.
+Uses only `$CI_JOB_TOKEN` (automatically provided by GitLab CI) — no PAT
+needed.
 
 ### One-time setup
 
