@@ -21,7 +21,7 @@ test:
 # The image lives in the GitLab Container Registry ($CI_REGISTRY_IMAGE:latest).
 build_image:
   stage: build
-  image: docker:24-cli
+  image: quay.io/podman/stable:latest
   variables:
     DOCKER_HOST: unix:///run/podman/podman.sock
   rules:
@@ -31,9 +31,9 @@ build_image:
         - .gitlab-ci.yml
     - if: $CI_PIPELINE_SOURCE == "web" && $BUILD_IMAGE == "true"
   script:
-    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
-    - docker build -t "$CI_REGISTRY_IMAGE:latest" .
-    - docker push "$CI_REGISTRY_IMAGE:latest"
+    - podman login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - podman build -t "$CI_REGISTRY_IMAGE:latest" .
+    - podman push "$CI_REGISTRY_IMAGE:latest"
 
 # Resolve domains and publish JSON snapshots hourly.
 # Uses the custom image — no package install needed at runtime.
