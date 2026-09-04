@@ -31,6 +31,22 @@ if [ ! -d "$TARGET" ] || [ -z "$(ls -A "$TARGET"/*.json 2>/dev/null)" ]; then
   exit 1
 fi
 
+# curl wrapper that fails loudly: prints HTTP status + body on error.
+curl_api() {
+  local out code
+  out=$(mktemp)
+  curl -sS --write-out '%{http_code}' "$@" >"$out" 2>/dev/null
+  code=$(tail -c3 "$out")
+  body=$(head -c -3 "$out")
+  rm -f "$out"
+  if [ "$code" -ge 400 ]; then
+    echo "HTTP ${code} on $*" >&2
+    echo "$body" >&2
+    return 22
+  fi
+  printf '%s' "$body"
+}
+
 # ---------------------------------------------------------------------------
 # 1. Upload each JSON to the Generic Package Registry (version "latest").
 #    Overwrites the previous version; no accumulation.
@@ -39,7 +55,7 @@ echo ">>> Uploading JSON to package registry (${PKG_NAME}/${PKG_VERSION})"
 for f in "$TARGET"/*.json; do
   name=$(basename "$f")
   enc=$(printf '%s' "$name" | sed 's/ /%20/g')
-  curl -sf --request PUT \
+  curl_api --request PUT \
     --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
     --header "Content-Type: application/json" \
     --data-binary "@$f" \
@@ -51,8 +67,8 @@ done
 # 2. Ensure tag "latest" exists (release needs a tag).
 # ---------------------------------------------------------------------------
 echo ">>> Ensuring tag '${TAG}'"
-if ! curl -sf --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" "${API}/repository/tags/${TAG}" >/dev/null 2>&1; then
-  curl -sf --request POST --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
+if ! curl_api --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" "${API}/repository/tags/${TAG}" >/dev/null 2>&1; then
+  curl_api --request POST --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
     --data-urlencode "tag_name=${TAG}" \
     --data-urlencode "ref=${CI_DEFAULT_BRANCH}" \
     "${API}/repository/tags" >/dev/null
@@ -63,13 +79,13 @@ fi
 # ---------------------------------------------------------------------------
 echo ">>> Ensuring release '${TAG}'"
 DESC="IP snapshots auto-refreshed hourly. Files always serve the latest content."
-if ! curl -sf --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" "${API}/releases/${TAG}" >/dev/null 2>&1; then
-  curl -sf --request POST --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
+if ! curl_api --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" "${API}/releases/${TAG}" >/dev/null 2>&1; then
+  curl_api --request POST --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
     --header "Content-Type: application/json" \
     --data "{\"name\":\"Latest IP snapshots\",\"tag_name\":\"${TAG}\",\"description\":\"${DESC}\"}" \
     "${API}/releases" >/dev/null
 else
-  curl -sf --request PUT --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
+  curl_api --request PUT --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
     --data-urlencode "description=${DESC}" \
     "${API}/releases/${TAG}" >/dev/null
 fi
@@ -80,7 +96,7 @@ fi
 #    direct_asset_path so the permanent downloads/ URL works.
 # ---------------------------------------------------------------------------
 echo ">>> Syncing asset links"
-existing=$(curl -sf --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" "${API}/releases/${TAG}/assets/links")
+existing=$(curl_api --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" "${API}/releases/${TAG}/assets/links")
 
 for f in "$TARGET"/*.json; do
   name=$(basename "$f")
@@ -89,11 +105,11 @@ for f in "$TARGET"/*.json; do
 
   link_id=$(printf '%s' "$existing" | jq -r --arg n "$name" '.[] | select(.name==$n) | .id')
   if [ -n "$link_id" ] && [ "$link_id" != "null" ]; then
-    curl -sf --request DELETE --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
+    curl_api --request DELETE --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
       "${API}/releases/${TAG}/assets/links/${link_id}" >/dev/null
   fi
 
-  curl -sf --request POST --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
+  curl_api --request POST --header "PRIVATE-TOKEN: ${PROJECT_TOKEN}" \
     --data-urlencode "name=${name}" \
     --data-urlencode "url=${pkg_url}" \
     --data-urlencode "direct_asset_path=${asset_path}" \
