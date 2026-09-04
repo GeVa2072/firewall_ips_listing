@@ -33,7 +33,7 @@ grab_ip_print_header() {
   title=$1
   grab_ip_ligne_separator "="
 
-  echo $title
+  printf '%s\n' "$title"
 
   grab_ip_ligne_separator
 }
@@ -55,33 +55,153 @@ grab_ip_print_footer() {
 grab_ip_resolve_dns() {
   domain=$1
   type=$2
-  dig +short $domain $type | while read -r ip
+  dig +short "$domain" "$type" | while read -r ip
   do
-    if [ -n $ip ] && grab_ip_is_valid_ip $ip $type
+    if [ -n "$ip" ] && grab_ip_is_valid_ip "$ip" "$type"
 	then
-	  echo $ip
+	  echo "$ip"
 	fi
   done
 }
 
-grab_ip_is_valid_ip() { 
+grab_ip_is_valid_ipv6() {
+  ip=$1
+
+  # 1. Strip zone id (e.g. fe80::1%eth0)
+  local addr="${ip%%\%*}"
+
+  # 2. Only hex digits, colons and dots allowed
+  if [[ ! "$addr" =~ ^[0-9a-fA-F:.]+$ ]]; then
+    return 1
+  fi
+
+  # 3. At most one '::' compression
+  local tmp="$addr"
+  local dc=0
+  while [[ "$tmp" == *"::"* ]]; do
+    dc=$((dc + 1))
+    tmp="${tmp#*::}"
+  done
+  if [ "$dc" -gt 1 ]; then
+    return 1
+  fi
+
+  # 4. Split IPv4-mapped tail (counts as 2 groups) if present
+  local hex_part="$addr"
+  local v4_groups=0
+  if [[ "$addr" == *.* ]]; then
+    local v4="${addr##*:}"
+    hex_part="${addr%:$v4}"
+    if ! [[ "$v4" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      return 1
+    fi
+    local IFS_save="$IFS"
+    IFS='.' read -r o1 o2 o3 o4 <<< "$v4"
+    IFS="$IFS_save"
+    for o in "$o1" "$o2" "$o3" "$o4"; do
+      [ "$o" -ge 0 ] 2>/dev/null && [ "$o" -le 255 ] 2>/dev/null || return 1
+    done
+    v4_groups=2
+  fi
+
+  # 5. Count non-empty hex groups, each must be 1-4 hex digits
+  local group_count=0
+  local IFS_save="$IFS"
+  IFS=':' read -ra raw <<< "$hex_part"
+  IFS="$IFS_save"
+  for g in "${raw[@]}"; do
+    if [ -n "$g" ]; then
+      if [ "${#g}" -gt 4 ] || ! [[ "$g" =~ ^[0-9a-fA-F]+$ ]]; then
+        return 1
+      fi
+      group_count=$((group_count + 1))
+    fi
+  done
+
+  local total=$((group_count + v4_groups))
+
+  # 6. With '::' : compression fills the rest, present groups must be < 8
+  #    Without '::' : groups must total exactly 8
+  if [ "$dc" -eq 1 ]; then
+    [ "$total" -lt 8 ]
+  else
+    [ "$total" -eq 8 ]
+  fi
+}
+
+grab_ip_is_valid_ipv4() {
+  ip=$1
+
+  # 1. Format : quatre octets séparés par des points
+  if [[ ! "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    return 1
+  fi
+
+  # 2. Chaque octet doit être dans [0, 255]
+  local IFS_save="$IFS"
+  IFS='.' read -r o1 o2 o3 o4 <<< "$ip"
+  IFS="$IFS_save"
+  for o in "$o1" "$o2" "$o3" "$o4"; do
+    [ "$o" -ge 0 ] 2>/dev/null && [ "$o" -le 255 ] 2>/dev/null || return 1
+  done
+}
+
+grab_ip_is_valid_ip() {
   ip=$1
   type=$2
   case $type in
     AAAA)
-	  if [[ $ip =~ ^([0-9a-fA-F]{0,4}[:]{1,2})+[0-9a-fA-F]{0,4}(([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)?(%[a-zA-Z0-9._-]+)?)$ ]]
-	  then
-	    return 0
-      else
-	    return 1
-	  fi
+	  grab_ip_is_valid_ipv6 "$ip"
 	;;
 	A)
-		# $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$
-	  ip -4 route get $ip/32 >/dev/null 2>&1 
-	  return $?
+	  grab_ip_is_valid_ipv4 "$ip"
 	;;
 	*)
 	  return 255
   esac
+}
+
+# Merge resolved IPs (TSV: "ip<TAB>v4|v6") into existing JSON, refresh
+# last_seen for resolved IPs, preserve others, purge by cutoff.
+# Args: old_json  new_ips_tsv  now  cutoff  domain
+# Outputs merged JSON (with ._stats) on stdout.
+grab_ip_merge_json() {
+  local old_json=$1
+  local new_ips_tsv=$2
+  local now=$3
+  local cutoff=$4
+  local domain=$5
+
+  local new_ips_json
+  if [ -n "$new_ips_tsv" ]; then
+    new_ips_json=$(printf '%s\n' "$new_ips_tsv" | jq -Rn --arg now "$now" \
+      '[inputs | split("\t") | {ip: .[0], type: .[1], last_seen: $now}]')
+  else
+    new_ips_json='[]'
+  fi
+
+  jq -n \
+    --argjson new "$new_ips_json" \
+    --argjson old "[$old_json]" \
+    --arg now "$now" \
+    --arg cutoff "$cutoff" \
+    --arg domain "$domain" \
+    '
+    ($old[0].ips // []) as $old_ips
+    | ($new | map({( .ip ): {type, last_seen}}) | add // {}) as $newmap
+    | ($old_ips | map({( .ip ): {type, last_seen}}) | add // {}) as $oldmap
+    | ($oldmap + $newmap) as $merged
+    | ($merged | with_entries(select(.value.last_seen >= $cutoff))) as $final
+    | {
+        domain: $domain,
+        updated: $now,
+        ips: ($final | to_entries | map({ip: .key, type: .value.type, last_seen: .value.last_seen}) | sort_by(.ip)),
+        _stats: {
+          resolved: ($new | length),
+          added: (($newmap | keys) - ($oldmap | keys)) | length,
+          purged: (($oldmap | keys) - ($final | keys)) | length,
+          total: ($final | length)
+        }
+      }
+    '
 }

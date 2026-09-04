@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Get the absolute directory of the currently running script
-SCRIPT_DIR="$(cd "$(dirname "../${BASH_SOURCE[0]}")" && pwd)"
+# Get the directory of the repo root (core.func lives one level above tests/)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Source the function file safely
 if [ -f "$SCRIPT_DIR/core.func" ]; then
@@ -62,7 +62,29 @@ grab_ip_test_ip "Groupes trop longs : Plus de 4 caractères hexadécimaux dans u
 grab_ip_test_ip "Trop de groupes : Plus de 8 groupes après expansion" \
  2001:0db8:85a3:0000:0000:8a2e:0370:7334:1234 AAAA "INVALID"
 grab_ip_test_ip "Pas assez de groupes : Moins de 8 groupes sans compression ::" \
- 2001:db8:85a3:0:8a2e:370 "INVALID"
+ 2001:db8:85a3:0:8a2e:370 AAAA "INVALID"
+
+# test resolv IPV4 valid
+grab_ip_print_header "📊 RAPPORT DE CONFORMITÉ IPV4 : SCÉNARIOS \$status"
+grab_ip_test_ip "Adresse IPv4 standard" \
+ 192.168.1.1 A
+grab_ip_test_ip "Adresse IPv4 avec zéros" \
+ 10.0.0.1 A
+grab_ip_test_ip "Adresse IPv4 borne maximale 255" \
+ 255.255.255.255 A
+grab_ip_test_ip "Adresse IPv4 borne minimale 0" \
+ 0.0.0.0 A
+
+grab_ip_test_ip "Octet supérieur à 255" \
+ 192.168.1.256 A "INVALID"
+grab_ip_test_ip "Octet à trois chiffres hors bornes" \
+ 999.1.1.1 A "INVALID"
+grab_ip_test_ip "Trop peu d'octets" \
+ 192.168.1 A "INVALID"
+grab_ip_test_ip "Trop d'octets" \
+ 192.168.1.1.1 A "INVALID"
+grab_ip_test_ip "Caractère non numérique" \
+ 192.168.1.a A "INVALID"
 
 grab_ip_print_footer ${total} ${success} ${failed}
 

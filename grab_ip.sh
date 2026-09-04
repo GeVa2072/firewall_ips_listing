@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+retention=30
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --retention)
+      [[ $# -ge 2 ]] || { echo "Error: --retention requires a value." >&2; exit 1; }
+      retention="$2"; shift 2 ;;
+    -h|--help)
+      echo "Usage: grab_ip.sh [--retention N]   (default: 30 days, 0 disables purge)"; exit 0 ;;
+    *)
+      echo "Error: unknown argument '$1'" >&2; exit 1 ;;
+  esac
+done
+
 # Get the absolute directory of the currently running script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -15,41 +28,54 @@ fi
 target_dir=$SCRIPT_DIR/target
 domain_dir=$SCRIPT_DIR/domains
 
+shopt -s nullglob
 
-if [ ! -d ${target_dir} ]
-then
-  mkdir ${target_dir}
+# Reference timestamp and purge cutoff (ISO 8601 UTC, lexicographically comparable)
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+if [ "${retention}" -gt 0 ]; then
+  CUTOFF=$(date -u -d "${retention} days ago" +%Y-%m-%dT%H:%M:%SZ)
+else
+  CUTOFF="1970-01-01T00:00:00Z"
 fi
 
-for file in ${domain_dir}/*.txt;
+if [ ! -d "${target_dir}" ]
+then
+  mkdir "${target_dir}"
+fi
+
+for file in "${domain_dir}"/*.txt;
 do
-  domain_name=$(basename ${file%.txt})
+  domain_name=$(basename "${file%.txt}")
   grab_ip_print_header "📊 RAPPORT DES IPs du domain : ${domain_name}"
-  ips=$(while IFS=$'\n' read -r d; 
+
+  # Resolve A (v4) and AAAA (v6) for each host, emit "ip<TAB>type" lines
+  resolved_tsv=$(while IFS=$'\n' read -r d;
   do
     if [ -n "$d" ]
 	then
-      grab_ip_resolve_dns $d A
-      grab_ip_resolve_dns $d AAAA
+      grab_ip_resolve_dns "$d" A    | while read -r ip; do printf '%s\tv4\n' "$ip"; done
+      grab_ip_resolve_dns "$d" AAAA  | while read -r ip; do printf '%s\tv6\n' "$ip"; done
 	fi
-  done < ${file})
+  done < "$file")
 
-  # Append to file
-  domain_ips_file=${target_dir}/${domain_name}_ips.txt
-  nb_line=0
-  if [ -f ${domain_ips_file} ]
-  then 
-	nb_line=$(wc -l < ${domain_ips_file})
-	ips="${ips}
-$(cat ${domain_ips_file})"
+  if [ -n "$resolved_tsv" ]; then
+    NEW_IPS="$resolved_tsv"
+  else
+    NEW_IPS=''
   fi
-  
-  
-  echo "${ips}" | sort | uniq > ${domain_ips_file}
-  nb_new_line=$(wc -l < ${domain_ips_file})
-  if [[ ${nb_new_line} -ne ${nb_line} ]]
-  then
-    echo "$((nb_new_line - nb_line)) new IPs added"
+
+  domain_ips_file="${target_dir}/${domain_name}.json"
+  if [ -f "$domain_ips_file" ]; then
+    OLD_JSON=$(cat "$domain_ips_file")
+  else
+    OLD_JSON='{"ips":[]}'
   fi
-  
+
+  result=$(grab_ip_merge_json "$OLD_JSON" "$NEW_IPS" "$NOW" "$CUTOFF" "$domain_name")
+
+  printf '%s\n' "$result" | jq 'del(._stats)' > "$domain_ips_file"
+
+  read -r added purged total <<< "$(printf '%s\n' "$result" | jq -r '._stats | "\(.added) \(.purged) \(.total)"')"
+  echo "${added} new IPs added, ${purged} purged (${retention}d retention), ${total} total"
+
 done
